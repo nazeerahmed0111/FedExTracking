@@ -5,7 +5,7 @@ import pandas as pd
 # Consolidated datetime imports to avoid confusion
 from datetime import datetime
 import datetime # Keep this for datetime.date.today() and datetime.fromisoformat
-from dotenv import load_dotenv
+#from dotenv import load_dotenv
 import json
 import io
 import time

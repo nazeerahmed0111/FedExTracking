@@ -3,7 +3,7 @@ import json
 from datetime import datetime, date
 import random
 import string
-from dotenv import load_dotenv # <--- ADD THIS IMPORT
+#from dotenv import load_dotenv # <--- ADD THIS IMPORT
 from supabase import create_client, Client
 import streamlit as st # Only needed for st.cache_resource, etc.
 

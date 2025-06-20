@@ -26,11 +26,21 @@ else:
 
 # --- Step 2: Retrieve environment variables and print their status ---
 # Ensure these variables are read AFTER load_dotenv()
+'''
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
 FEDEX_API_KEY = os.getenv("FEDEX_API_KEY")
 FEDEX_API_SECRET = os.getenv("FEDEX_API_SECRET")
+'''
+
+SUPABASE_URL = st.secrets["SUPABASE_URL"]
+SUPABASE_ANON_KEY = st.secrets("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_KEY = st.secrets("SUPABASE_SERVICE_KEY")
+FEDEX_API_KEY = st.secrets("FEDEX_API_KEY")
+FEDEX_API_SECRET = st.secrets("FEDEX_API_SECRET")
+
+
 
 print(f"DEBUG (db_helper): SUPABASE_URL = {'(set)' if SUPABASE_URL else '(None)'}")
 print(f"DEBUG (db_helper): SUPABASE_ANON_KEY = {'(set)' if SUPABASE_ANON_KEY else '(None)'}")

@@ -43,8 +43,12 @@ if 'current_page' not in st.session_state:
 load_dotenv()
 API_ENDPOINT = "https://apis-sandbox.fedex.com/track/v1/trackingnumbers"
 AUTH_URL = "https://apis-sandbox.fedex.com/oauth/token"
-API_KEY = os.getenv("FEDEX_API_KEY")
-API_SECRET = os.getenv("FEDEX_API_SECRET") # Ensure this matches your .env key
+#API_KEY = os.getenv("FEDEX_API_KEY")
+#API_SECRET = os.getenv("FEDEX_API_SECRET") # Ensure this matches your .env key
+
+# Change these lines to use st.secrets
+API_KEY = st.secrets["FEDEX_API_KEY"]
+API_SECRET = st.secrets["FEDEX_API_SECRET"]
 
 if not API_KEY or not API_SECRET:
     st.error("❌ API_KEY or API_SECRET environment variables not set.")

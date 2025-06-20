@@ -1,196 +1,179 @@
 import os
 import json
-from datetime import datetime
+from datetime import datetime, date
 import random
 import string
-import psycopg2 # <-- PostgreSQL library
-from urllib.parse import urlparse
-from dotenv import load_dotenv # For loading environment variables locally
+from dotenv import load_dotenv # <--- ADD THIS IMPORT
+from supabase import create_client, Client
+import streamlit as st # Only needed for st.cache_resource, etc.
 
-# Load environment variables from a .env file for local development
-# In production (e.g., Streamlit Cloud), these env vars will be set directly.
-load_dotenv()
+# --- Step 1: Explicitly load environment variables at the very top ---
+# This ensures that if db_helper.py is imported or run directly,
+# it has access to the environment variables.
+# Specify the absolute path to your .env.txt file for robustness.
+env_file_path = "C:\\Users\\rcmsbot\\Documents\\FedEx Shipment Tracker\\.env.txt"
 
-# --- Database Configuration ---
-# DATABASE_URL is essential for connecting to your Neon database
-DATABASE_URL = os.getenv("DATABASE_URL")
+print(f"DEBUG: Attempting to load .env from: {env_file_path}")
+if os.path.exists(env_file_path):
+    load_dotenv(dotenv_path=env_file_path)
+    print(f"DEBUG: Successfully called load_dotenv for {env_file_path}")
+else:
+    print(f"ERROR: .env file NOT FOUND at: {env_file_path}. Please check the path.")
+    # Exit or raise an error immediately if the .env is critical and not found
+    # import sys
+    # sys.exit("Missing .env file. Exiting.")
 
-if not DATABASE_URL:
-    print("Warning: DATABASE_URL environment variable is not set. Database functions may fail.")
-    print("Please set DATABASE_URL in your environment or .env file for local testing.")
-    # In a production app, you might want to raise an error here to prevent startup
 
-def get_db_connection():
-    """Establishes and returns a connection to the PostgreSQL database."""
-    if not DATABASE_URL:
-        raise ValueError("DATABASE_URL environment variable is not set. Cannot connect to database.")
+# --- Step 2: Retrieve environment variables and print their status ---
+# Ensure these variables are read AFTER load_dotenv()
+SUPABASE_URL = os.getenv("SUPABASE_URL")
+SUPABASE_ANON_KEY = os.getenv("SUPABASE_ANON_KEY")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+FEDEX_API_KEY = os.getenv("FEDEX_API_KEY")
+FEDEX_API_SECRET = os.getenv("FEDEX_API_SECRET")
+
+print(f"DEBUG (db_helper): SUPABASE_URL = {'(set)' if SUPABASE_URL else '(None)'}")
+print(f"DEBUG (db_helper): SUPABASE_ANON_KEY = {'(set)' if SUPABASE_ANON_KEY else '(None)'}")
+print(f"DEBUG (db_helper): SUPABASE_SERVICE_KEY = {'(set)' if SUPABASE_SERVICE_KEY else '(None)'}") # THIS IS THE CRITICAL ONE
+print(f"DEBUG (db_helper): FEDEX_API_KEY = {'(set)' if FEDEX_API_KEY else '(None)'}")
+print(f"DEBUG (db_helper): FEDEX_API_SECRET = {'(set)' if FEDEX_API_SECRET else '(None)'}")
+
+
+# --- Supabase Client Initialization ---
+@st.cache_resource
+def get_supabase_client():
+    if not SUPABASE_URL:
+        st.error("Supabase URL is not set. Please configure SUPABASE_URL in your .env.txt.")
+        raise ValueError("Supabase URL missing.")
+    if not SUPABASE_ANON_KEY:
+        st.error("Supabase ANON Key is not set. Please configure SUPABASE_ANON_KEY in your .env.txt.")
+        raise ValueError("Supabase ANON Key missing.")
     
     try:
-        url = urlparse(DATABASE_URL)
-        conn = psycopg2.connect(
-            database=url.path[1:], # Path is '/database_name', so [1:] removes the '/'
-            user=url.username,
-            password=url.password,
-            host=url.hostname,
-            port=url.port,
-            # Neon typically requires sslmode=require for secure connections
-            sslmode='require' if url.query and 'sslmode=require' in url.query else 'prefer'
-        )
-        return conn
+        print("DEBUG: Initializing Supabase client with ANON_KEY...") # Debugging
+        return create_client(SUPABASE_URL, SUPABASE_ANON_KEY)
     except Exception as e:
-        print(f"Error connecting to PostgreSQL database: {e}")
-        # In a real app, you might want to log this error and provide user feedback
-        raise # Re-raise the exception to indicate a critical failure
+        st.error(f"Error initializing Supabase client with ANON key: {e}")
+        print(f"ERROR: Supabase ANON client initialization failed: {e}")
+        raise
 
+supabase: Client = get_supabase_client()
+
+
+# --- Database Initialization Function ---
 def init_db():
-    """Initializes the database by creating tables if they do not exist."""
-    conn = None
+    print("DEBUG: Entering init_db function.")
+    print(f"DEBUG (init_db): SUPABASE_URL = {'(set)' if SUPABASE_URL else '(None)'}")
+    print(f"DEBUG (init_db): SUPABASE_SERVICE_KEY = {'(set)' if SUPABASE_SERVICE_KEY else '(None)'}") # AGAIN, CRITICAL
+
+    if not SUPABASE_URL or not SUPABASE_SERVICE_KEY:
+        error_msg = "Supabase URL or SERVICE Key is not set for database initialization. Please configure SUPABASE_URL and SUPABASE_SERVICE_KEY in your .env.txt."
+        st.error(error_msg)
+        print(f"ERROR: {error_msg}")
+        raise ValueError("Supabase SERVICE_KEY credentials missing for init_db.")
+
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        # Create a client with the SERVICE_KEY for admin tasks
+        print("DEBUG: Attempting to create admin_supabase client...")
+        admin_supabase = create_client(SUPABASE_URL, SUPABASE_SERVICE_KEY) # <--- THIS IS THE LINE THAT IS FAILING
+        print("DEBUG: admin_supabase client created successfully.")
         
-        # Table to store unique bulk upload references (batch info)
-        # We'll use this to get a representative upload_time for the batch
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS uploads (
-                reference_id TEXT PRIMARY KEY,
-                upload_time TEXT NOT NULL
-            );
-        """)
-        
-        # Table to store individual tracking numbers and their raw JSON data
-        # 'id' is SERIAL for auto-incrementing primary key in PostgreSQL
-        cursor.execute("""
-            CREATE TABLE IF NOT EXISTS tracking_data (
-                id SERIAL PRIMARY KEY,
-                reference_id TEXT NOT NULL,
-                tracking_number TEXT NOT NULL,
-                raw_json TEXT NOT NULL,
-                upload_time TEXT NOT NULL,
-                -- Foreign key constraint to link to the 'uploads' table
-                FOREIGN KEY (reference_id) REFERENCES uploads (reference_id) ON DELETE CASCADE
-            );
-        """)
-        conn.commit()
-        print("PostgreSQL tables created or already exist.")
+        # ... (rest of your init_db function remains the same, assuming tables are pre-created or handled)
+        print("Database initialization check (tables assumed to exist).")
+
     except Exception as e:
-        print(f"Error initializing PostgreSQL database: {e}")
-    finally:
-        if conn:
-            conn.close()
+        error_msg = f"Error during database initialization (init_db): {e}"
+        print(f"ERROR: {error_msg}")
+        st.error(f"Failed to initialize database tables: {e}. Ensure Supabase SERVICE_KEY is correct and tables are created.")
+        raise # Re-raise to halt execution if DB init fails
+
+# --- Utility Functions (unchanged from your code, keeping for completeness) ---
 
 def generate_reference():
-    """Generates a unique reference ID based on timestamp and random characters."""
-    now = datetime.now().strftime("%Y%m%d%H%M%S")
-    rand = ''.join(random.choices(string.ascii_uppercase + string.digits, k=4))
-    return f"BULK-{now}-{rand}"
+    timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    random_str = ''.join(random.choices(string.ascii_uppercase + string.digits, k=6))
+    return f"REF-{timestamp}-{random_str}"
 
-def save_upload_with_json(reference_id, tracking_number, raw_json):
-    """
-    Saves a single tracking entry and associates it with a reference_id.
-    Also ensures the reference_id exists in the 'uploads' table.
-    """
-    conn = None
+
+
+# (Keep all your existing code above this function, including load_dotenv,
+# SUPABASE_URL, etc., and the @st.cache_resource get_supabase_client, and init_db)
+
+def save_upload_with_json(reference_id, tracking_number, raw_json_data):
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        upload_time = datetime.now().isoformat()
+        # Use upsert() for the 'references' table
+        reference_data, count = supabase.table('references_data').upsert({
+            "reference_id": reference_id,
+            "upload_time": datetime.now().isoformat()
+        }, on_conflict='reference_id').execute()
 
-        # Insert into 'uploads' table. If reference_id already exists, do nothing.
-        # This handles multiple tracking numbers in one batch associated with the same reference_id.
-        cursor.execute(
-            "INSERT INTO uploads (reference_id, upload_time) VALUES (%s, %s) ON CONFLICT (reference_id) DO NOTHING;",
-            (reference_id, upload_time)
-        )
+        # --- REVISED DEBUGGING BLOCK FOR JSON DATA ---
+        print(f"\n--- DEBUGGING JSON FOR TRACKING: {tracking_number} ---")
+        print(f"DEBUG: Type of 'raw_json_data' received by save_upload_with_json: {type(raw_json_data)}")
+        print(f"DEBUG: Content of 'raw_json_data' (truncated if long): {str(raw_json_data)[:500]}...")
+
+        json_to_save = raw_json_data # <--- THIS IS THE KEY CHANGE!
+
+        # Optional: Add a check for type, though Supabase client is usually robust
+        if not isinstance(json_to_save, (dict, list, type(None))):
+            print(f"WARNING: 'json_to_save' is not a dict, list, or None. Type: {type(json_to_save)}")
+            st.warning(f"Unexpected data type for JSON column: {type(json_to_save)}. Attempting to save.")
+
+        print(f"DEBUG: Final object to be saved as JSONB. Type: {type(json_to_save)}")
+        # --- END DEBUGGING BLOCK ---
+
+        # Then insert into 'tracking_datanew'
+        data, count = supabase.table('tracking_datanew').insert({
+            "reference_id": reference_id,
+            "tracking_number": tracking_number,
+            "raw_json": json_to_save # Pass the dict/list directly
+        }).execute()
         
-        # Insert into 'tracking_data' table
-        cursor.execute(
-            "INSERT INTO tracking_data (reference_id, tracking_number, raw_json, upload_time) VALUES (%s, %s, %s, %s);",
-            (reference_id, tracking_number, raw_json, upload_time)
-        )
-        conn.commit()
-        return True # Indicate success
+        print(f"DEBUG: Data successfully inserted for tracking number: {tracking_number}")
+        return True
     except Exception as e:
-        print(f"Error saving tracking data for {tracking_number} (Ref: {reference_id}): {e}")
-        if conn:
-            conn.rollback() # Rollback changes if an error occurs
-        return False # Indicate failure
-    finally:
-        if conn:
-            conn.close()
+        error_message = f"Error saving tracking data for {tracking_number}: {e}"
+        st.error(error_message)
+        print(f"ERROR (save_upload_with_json): {error_message}")
+        import traceback
+        traceback.print_exc() # Print full traceback for this specific error
+        return False
+
+# (Keep the rest of your db_helper.py, including get_all_references, get_tracking_numbers, etc.,
+# and the final init_db() call)
+
 
 def get_all_references():
-    """
-    Retrieves all unique reference IDs and their earliest upload times from the tracking_data table.
-    This effectively gives you a list of all unique bulk uploads.
-    """
-    conn = None
-    references = []
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        # Using MIN(upload_time) from 'tracking_data' to get the earliest upload time for each batch
-        cursor.execute("SELECT reference_id, MIN(upload_time) AS upload_time FROM tracking_data GROUP BY reference_id ORDER BY upload_time DESC;")
-        rows = cursor.fetchall()
-        # Convert list of tuples to list of dictionaries for easier handling
-        for row in rows:
-            references.append({"reference_id": row[0], "upload_time": row[1]})
+        response = supabase.table('references_data').select('*').order('upload_time', desc=True).execute()
+        return response.data
     except Exception as e:
-        print(f"Error getting all references from PostgreSQL: {e}")
-    finally:
-        if conn:
-            conn.close()
-    return references
+        st.error(f"Error fetching references: {e}")
+        return []
 
 def get_tracking_numbers(reference_id):
-    """Retrieves all tracking numbers associated with a given reference ID."""
-    conn = None
-    tracking_numbers = []
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT tracking_number FROM tracking_data WHERE reference_id = %s ORDER BY tracking_number;",
-            (reference_id,) # Note the comma for a single-element tuple
-        )
-        rows = cursor.fetchall()
-        tracking_numbers = [row[0] for row in rows] # Each row is a tuple, we want the first element
+        response = supabase.table('tracking_datanew').select('tracking_number').eq('reference_id', reference_id).execute()
+        return [item['tracking_number'] for item in response.data]
     except Exception as e:
-        print(f"Error getting tracking numbers for reference {reference_id} from PostgreSQL: {e}")
-    finally:
-        if conn:
-            conn.close()
-    return tracking_numbers
+        st.error(f"Error fetching tracking numbers for {reference_id}: {e}")
+        return []
 
 def get_tracking_json(reference_id):
-    """
-    Retrieves all tracking data (tracking_number, raw_json, upload_time)
-    for a given reference ID.
-    """
-    conn = None
-    tracking_data_entries = []
     try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT tracking_number, raw_json, upload_time FROM tracking_data WHERE reference_id = %s ORDER BY upload_time DESC;",
-            (reference_id,) # Note the comma for a single-element tuple
-        )
-        rows = cursor.fetchall()
-        # Convert list of tuples to list of dictionaries for easier consumption
-        for row in rows:
-            tracking_data_entries.append({
-                "tracking_number": row[0],
-                "raw_json": row[1],
-                "upload_time": row[2]
-            })
+        response = supabase.table('tracking_datanew').select('*').eq('reference_id', reference_id).execute()
+        return response.data
     except Exception as e:
-        print(f"Error getting tracking JSON for reference {reference_id} from PostgreSQL: {e}")
-    finally:
-        if conn:
-            conn.close()
-    return tracking_data_entries
+        st.error(f"Error fetching tracking JSON for {reference_id}: {e}")
+        return []
 
-# --- Initialize the database when this module is imported ---
-# This ensures tables are created when the Streamlit app starts
-init_db()
+# --- Initializing the database tables on app start ---
+try:
+    print("DEBUG: Calling init_db() at the end of db_helper.py.")
+    init_db()
+except Exception as e:
+    fatal_error_msg = f"FATAL ERROR: Database initialization failed. Please check your Supabase keys and table setup. Details: {e}"
+    st.error(fatal_error_msg)
+    print(f"ERROR: {fatal_error_msg}")
+    import sys
+    sys.exit(1) # Exit if critical initialization fails

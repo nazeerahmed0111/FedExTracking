@@ -2,13 +2,16 @@ import os
 import requests
 import streamlit as st
 import pandas as pd
-from datetime import datetime, date
+# Consolidated datetime imports to avoid confusion
+from datetime import datetime
+import datetime # Keep this for datetime.date.today() and datetime.fromisoformat
 from dotenv import load_dotenv
 import json
 import io
 import time
 import plotly.express as px
 import altair as alt
+
 # Assuming db_helper is in the same directory and its functions are correctly defined
 from db_helper import generate_reference, save_upload_with_json, get_all_references, get_tracking_numbers, get_tracking_json
 
@@ -169,9 +172,9 @@ def main_app():
                             current_status = track_info.get('latestStatusDetail', {}).get('statusByLocale', 'N/A')
                             st.write(f"**Current Status:** {current_status}")
 
-                            date_Times = track_info.get('dateAndTimes', [])
+                            date_times_info = track_info.get('dateAndTimes', []) # Renamed 'date_Times' to avoid confusion with the module
                             est_delivery = 'N/A'
-                            for item in date_Times:
+                            for item in date_times_info:
                                 if item.get('type') == 'ESTIMATED_DELIVERY':
                                     est_delivery = item.get('dateTime','N/A')
                                     break
@@ -184,9 +187,9 @@ def main_app():
 
                             pod = 'N/A'
                             pod_list = track_info.get('availableImages', [])
-                            for pod_Item in pod_list:
-                                if pod_Item.get('type'):
-                                    pod = pod_Item.get('type')
+                            for pod_item in pod_list: # Renamed 'pod_Item' to 'pod_item' for consistency
+                                if pod_item.get('type'):
+                                    pod = pod_item.get('type')
                                     break
                             st.write(f"**Proof of Delivery:** {pod}")
 
@@ -196,12 +199,14 @@ def main_app():
                             display_events = []
                             for event in scan_events:
                                 event_desc = event.get('eventDescription', 'N/A')
-                                date = event.get('date', 'N/A')
+                                # Renamed 'date' local variable to 'event_date_str' to avoid shadowing
+                                event_date_str = event.get('date', 'N/A')
                                 excep_desc = event.get('exceptionDescription', 'N/A')
                                 try:
-                                    date = pd.to_datetime(date)
+                                    # Use event_date_str here
+                                    event_date_obj = pd.to_datetime(event_date_str)
                                 except:
-                                    pass
+                                    event_date_obj = event_date_str # Keep as string if parsing fails
 
                                 scan_loc = event.get('scanLocation', {})
                                 loc_parts = []
@@ -213,7 +218,7 @@ def main_app():
 
                                 display_events.append({
                                     'Event Description': event_desc,
-                                    'Date': date,
+                                    'Date': event_date_obj, # Use the parsed/original date
                                     'Exception Description' : excep_desc,
                                     'Location': scan_location_str
                                 })
@@ -266,7 +271,7 @@ def main_app():
                         for tn in tracking_numbers:
                             result = track_shipment(tn, access_token)
                             if result:
-                                save_upload_with_json(reference_id, tn, json.dumps(result))
+                                save_upload_with_json(reference_id, tn, result)
                                 success_count += 1
                             else:
                                 st.warning(f"Failed to fetch tracking info for {tn}")
@@ -281,155 +286,168 @@ def main_app():
 
     elif st.session_state.current_page == 'results':
         st.markdown("<div class='custom-title'>🗂️ Shipment Tracking Results (Bulk Upload)</div>", unsafe_allow_html=True)
-        references = get_all_references()
-        if not references:
+        
+        # 1. Fetch all references (batches) from the database
+        all_references_from_db = get_all_references() # This fetches from 'references_data'
+
+        if not all_references_from_db:
             st.info("No bulk uploads found yet.")
-        else:
-            ref_options = {f"{r['reference_id']} (Uploaded: {r['upload_time']})": r['reference_id'] for r in references}
-            
-            if 'selected_ref_id' not in st.session_state or st.session_state.selected_ref_id not in ref_options.values():
-                st.session_state.selected_ref_id = list(ref_options.values())[0] if ref_options else None
+            return # Exit if no references are found in the DB
 
-            selected_ref_display = st.selectbox(
-                "Select a Bulk Upload Reference (Batch ID):",
-                options=list(ref_options.keys()),
-                key="batch_id_selector",
-                index=list(ref_options.values()).index(st.session_state.selected_ref_id) if st.session_state.selected_ref_id in list(ref_options.values()) else 0
-            )
-            st.session_state.selected_ref_id = ref_options[selected_ref_display]
+        # 2. Allow user to filter the *batches* by upload date
+        selected_date = st.date_input(
+            "Filter Bulk Upload Batches by Upload Date:",
+            value=datetime.date.today(), # Changed to datetime.date.today()
+            key="date_filter_results_page"
+        )
 
-            default_date = None
-            for r in references:
-                if r['reference_id'] == st.session_state.selected_ref_id:
-                    try:
-                        default_date = datetime.fromisoformat(r['upload_time']).date()
-                    except ValueError:
-                        default_date = date.today()
-                    break
-            if default_date is None:
-                default_date = date.today()
+        # 3. Filter the references based on the selected_date
+        filtered_references = []
+        for r in all_references_from_db:
+            try:
+                # 'upload_time' exists in the 'references_data' table, so this is correct here
+                #ref_upload_date = datetime.fromisoformat(r['upload_time']).date()
+                ref_upload_date = datetime.datetime.fromisoformat(r['upload_time']).date()
+                if ref_upload_date == selected_date:
+                    filtered_references.append(r)
+            except ValueError:
+                st.warning(f"Could not parse upload time for reference {r.get('reference_id', 'N/A')}. Skipping date filter for this reference.")
 
-            selected_date = st.date_input(
-                "Filter by Upload Date:",
-                value=default_date,
-                key="date_filter"
-            )
-            
-            if st.button("Fetch Tracking Results"):
-                all_saved_data_for_ref = get_tracking_json(st.session_state.selected_ref_id)
-                filtered_saved_data = []
-                for entry in all_saved_data_for_ref:
-                    try:
-                        entry_upload_date = datetime.fromisoformat(entry['upload_time']).date()
-                        if entry_upload_date == selected_date:
-                            filtered_saved_data.append(entry)
-                    except ValueError:
-                        st.warning(f"Could not parse upload time for {entry.get('tracking_number', 'N/A')}. Skipping date filter for this entry.")
+        if not filtered_references:
+            st.info(f"No bulk uploads found for `{selected_date.strftime('%Y-%m-%d')}`.")
+            return # Exit if no batches match the date filter
 
-                if not filtered_saved_data:
-                    st.warning(f"No tracking data found for Reference ID `{st.session_state.selected_ref_id}` on `{selected_date.strftime('%Y-%m-%d')}`.")
-                    return
+        # 4. Prepare options for the selectbox from the filtered references
+        ref_options = {f"{r['reference_id']} (Uploaded: {r['upload_time']})": r['reference_id'] for r in filtered_references}
 
-                all_results = []
-                def event_date(ev):
-                    try:
-                        dt = pd.to_datetime(ev.get('date', ''))
-                        if dt.tzinfo is not None:
-                            dt = dt.tz_localize(None)
-                        return dt
-                    except:
-                        return pd.Timestamp.min
+        # Ensure selected_ref_id is valid for the currently filtered options
+        if 'selected_ref_id' not in st.session_state or st.session_state.selected_ref_id not in ref_options.values():
+            st.session_state.selected_ref_id = list(ref_options.values())[0] if ref_options else None
 
-                for entry in filtered_saved_data:
-                    tn = entry['tracking_number']
-                    raw_json = json.loads(entry['raw_json'])
+        if st.session_state.selected_ref_id is None:
+            st.info("No batches available for selection after date filter.")
+            return
 
-                    complete_results = raw_json.get('output', {}).get('completeTrackResults', [])
-                    if complete_results:
-                        tracking_num = complete_results[0].get('trackingNumber', tn)
-                        track_results = complete_results[0].get('trackResults', [])
-                        if track_results:
-                            track_info = track_results[0]
-                            status = track_info.get('latestStatusDetail', {}).get('statusByLocale', 'N/A')
-                            est_delivery = 'N/A'
-                            date_times = track_info.get('dateAndTimes', [])
-                            for item in date_times:
-                                if item.get('type') == 'ESTIMATED_DELIVERY':
-                                    est_delivery = item.get('dateTime', 'N/A')
-                                    try:
-                                        dt_est = pd.to_datetime(est_delivery)
-                                        if dt_est.tzinfo is not None:
-                                            dt_est = dt_est.tz_localize(None)
-                                        est_delivery = dt_est
-                                    except:
-                                        pass
-                                    break
-                            pod = 'N/A'
-                            pod_list = track_info.get('availableImages', [])
-                            for pod_item in pod_list:
-                                pod_type = pod_item.get('type', '')
-                                if pod_type:
-                                    pod = pod_type
-                                    break
+        selected_ref_display = st.selectbox(
+            "Select a Bulk Upload Reference (Batch ID):",
+            options=list(ref_options.keys()),
+            key="batch_id_selector",
+            # Set index to the current selected_ref_id if it's in the filtered options
+            index=list(ref_options.values()).index(st.session_state.selected_ref_id) if st.session_state.selected_ref_id in list(ref_options.values()) else 0
+        )
+        st.session_state.selected_ref_id = ref_options[selected_ref_display]
 
-                            scan_events = track_info.get('scanEvents', [])
-                            if scan_events:
-                                latest_event = max(scan_events, key=event_date)
-                                event_desc = latest_event.get('eventDescription', 'N/A')
-                                event_date_val = latest_event.get('date', 'N/A')
+        # 5. Button to fetch results for the selected batch ID
+        if st.button("Fetch Tracking Results for Selected Batch"):
+            # Fetch ALL tracking data for the selected reference_id.
+            # No further date filtering needed here, as the batch itself was already filtered by date.
+            all_saved_data_for_ref = get_tracking_json(st.session_state.selected_ref_id)
+
+            if not all_saved_data_for_ref:
+                st.warning(f"No tracking data found for Reference ID `{st.session_state.selected_ref_id}`.")
+                return
+
+            all_results = []
+            def event_date(ev):
+                try:
+                    dt = pd.to_datetime(ev.get('date', ''))
+                    if dt.tzinfo is not None:
+                        dt = dt.tz_localize(None)
+                    return dt
+                except:
+                    return pd.Timestamp.min
+
+            for entry in all_saved_data_for_ref:
+                tn = entry['tracking_number']
+                raw_json = entry['raw_json'] # This is correct: raw_json is a dict/list
+
+                complete_results = raw_json.get('output', {}).get('completeTrackResults', [])
+                if complete_results:
+                    tracking_num = complete_results[0].get('trackingNumber', tn)
+                    track_results = complete_results[0].get('trackResults', [])
+                    if track_results:
+                        track_info = track_results[0]
+                        status = track_info.get('latestStatusDetail', {}).get('statusByLocale', 'N/A')
+                        est_delivery = 'N/A'
+                        date_times_list = track_info.get('dateAndTimes', []) # Renamed to avoid shadowing
+                        for item in date_times_list:
+                            if item.get('type') == 'ESTIMATED_DELIVERY':
+                                est_delivery = item.get('dateTime', 'N/A')
                                 try:
-                                    dt_val = pd.to_datetime(event_date_val)
-                                    if dt_val.tzinfo is not None:
-                                        dt_val = dt_val.tz_localize(None)
-                                    event_date_val = dt_val
+                                    dt_est = pd.to_datetime(est_delivery)
+                                    if dt_est.tzinfo is not None:
+                                        dt_est = dt_est.tz_localize(None)
+                                    est_delivery = dt_est
                                 except:
                                     pass
-                                scan_loc = latest_event.get('scanLocation', {})
-                                loc_parts = []
-                                for key in ['city', 'stateOrProvinceCode', 'countryCode', 'postalCode']:
-                                    val = scan_loc.get(key)
-                                    if val:
-                                        loc_parts.append(val)
-                                scan_location_str = ', '.join(loc_parts) if loc_parts else 'N/A'
-                            else:
-                                event_desc = 'N/A'
-                                event_date_val = 'N/A'
-                                scan_location_str = 'N/A'
+                                break
+                        pod = 'N/A'
+                        pod_list = track_info.get('availableImages', [])
+                        for pod_item in pod_list:
+                            pod_type = pod_item.get('type', '')
+                            if pod_type:
+                                pod = pod_type
+                                break
+
+                        scan_events = track_info.get('scanEvents', [])
+                        if scan_events:
+                            latest_event = max(scan_events, key=event_date)
+                            event_desc = latest_event.get('eventDescription', 'N/A')
+                            event_date_val = latest_event.get('date', 'N/A')
+                            try:
+                                dt_val = pd.to_datetime(event_date_val)
+                                if dt_val.tzinfo is not None:
+                                    dt_val = dt_val.tz_localize(None)
+                                event_date_val = dt_val
+                            except:
+                                pass
+                            scan_loc = latest_event.get('scanLocation', {})
+                            loc_parts = []
+                            for key in ['city', 'stateOrProvinceCode', 'countryCode', 'postalCode']:
+                                val = scan_loc.get(key)
+                                if val:
+                                    loc_parts.append(val)
+                            scan_location_str = ', '.join(loc_parts) if loc_parts else 'N/A'
                         else:
-                            status = 'N/A'
-                            est_delivery = 'N/A'
-                            pod = 'N/A'
                             event_desc = 'N/A'
                             event_date_val = 'N/A'
                             scan_location_str = 'N/A'
                     else:
-                        tracking_num = tn
                         status = 'N/A'
                         est_delivery = 'N/A'
                         pod = 'N/A'
                         event_desc = 'N/A'
                         event_date_val = 'N/A'
                         scan_location_str = 'N/A'
+                else:
+                    tracking_num = tn
+                    status = 'N/A'
+                    est_delivery = 'N/A'
+                    pod = 'N/A'
+                    event_desc = 'N/A'
+                    event_date_val = 'N/A'
+                    scan_location_str = 'N/A'
 
-                    all_results.append({
-                        'Tracking Number': tracking_num,
-                        'Status': status,
-                        'Estimated Delivery': est_delivery,
-                        'Proof of Delivery': pod,
-                        'Latest Event': event_desc,
-                        'Event Date': event_date_val,
-                        'Location': scan_location_str
-                    })
+                all_results.append({
+                    'Tracking Number': tracking_num,
+                    'Status': status,
+                    'Estimated Delivery': est_delivery,
+                    'Proof of Delivery': pod,
+                    'Latest Event': event_desc,
+                    'Event Date': event_date_val,
+                    'Location': scan_location_str
+                })
 
-                st.success("Results Fetched Successfully!")
-                result_df = pd.DataFrame(all_results)
-                try:
-                    result_df = result_df.sort_values(by='Event Date', ascending=False)
-                except Exception:
-                    pass
-                st.dataframe(result_df)
-                csv = result_df.to_csv(index=False).encode('utf-8')
-                st.download_button("Download Results as CSV", data=csv, file_name=f"{st.session_state.selected_ref_id}_{selected_date.strftime('%Y-%m-%d')}_results.csv", mime='text/csv')
+            st.success("Results Fetched Successfully!")
+            result_df = pd.DataFrame(all_results)
+            try:
+                result_df = result_df.sort_values(by='Event Date', ascending=False)
+            except Exception:
+                pass
+            st.dataframe(result_df)
+            csv = result_df.to_csv(index=False).encode('utf-8')
+            st.download_button("Download Results as CSV", data=csv, file_name=f"{st.session_state.selected_ref_id}_{selected_date.strftime('%Y-%m-%d')}_results.csv", mime='text/csv')
+
 
     elif st.session_state.current_page == 'analytics':
         st.markdown("<div class='custom-title'>📊 Analytics Dashboard</div>", unsafe_allow_html=True)
@@ -467,7 +485,9 @@ def main_app():
         processed_data = []
         for entry in all_raw_tracking_data:
             tn = entry['tracking_number']
-            raw_json = json.loads(entry['raw_json'])
+            # REMOVED: raw_json = json.loads(entry['raw_json'])
+            # The 'raw_json' column from Supabase is already parsed JSONB (Python dict/list)
+            raw_json = entry['raw_json']
 
             complete_results = raw_json.get('output', {}).get('completeTrackResults', [])
             if complete_results:

@@ -40,7 +40,7 @@ if 'current_page' not in st.session_state:
 
 
 # ✅ Load environment variables
-load_dotenv()
+#load_dotenv()
 API_ENDPOINT = "https://apis-sandbox.fedex.com/track/v1/trackingnumbers"
 AUTH_URL = "https://apis-sandbox.fedex.com/oauth/token"
 #API_KEY = os.getenv("FEDEX_API_KEY")

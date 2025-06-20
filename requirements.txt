@@ -5,6 +5,6 @@ openpyxl
 xlsxwriter
 plotly
 altair
-supabase-py
+supabase
 psycopg2-binary # <--- Make sure this is here!
 python-dotenv   # <--- Make sure this is here!

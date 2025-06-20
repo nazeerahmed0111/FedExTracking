@@ -1,0 +1,9 @@
+streamlit
+requests
+pandas
+openpyxl
+xlsxwriter
+plotly
+altair
+psycopg2-binary # <--- Make sure this is here!
+python-dotenv   # <--- Make sure this is here!
